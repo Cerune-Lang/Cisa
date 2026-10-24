@@ -1,0 +1,33 @@
+name: Cisa CPU regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cisa
+      - uses: actions/checkout@v4
+        with:
+          repository: Cerune-Lang/Cerune
+          ref: master
+          path: cerune
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - name: Build Cerune
+        working-directory: cerune
+        run: cargo build --locked --bin cerune
+      - name: Validate regression fixture generator
+        run: python3 -m unittest discover -s cisa/tests -v
+      - name: Check Cisa in four execution routes
+        run: python3 cisa/scripts/check_cpu.py --binary cerune/target/debug/cerune
