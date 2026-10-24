@@ -315,3 +315,16 @@ FPGA
 ## 名前の由来
 
 Cerune ISA から Cisa。
+
+## CALL / RET の回帰テスト
+
+正常系（`20\n10\n12\n`）と4つの異常系（CALL範囲外、stack overflow、空stack RET、RET戻り先範囲外）を、IR / MIR / SSA / VM の4経路で自動検証します。
+
+```powershell
+python scripts/check_cpu.py --binary cerune
+python -m unittest discover -s tests -v
+```
+
+`scripts/check_cpu.py` は `src/cpu.ceru` を変更せず、一時ディレクトリに5つのケースを作成します。各ケースについて `cerune check` と4経路の終了コード・標準出力・標準エラーを検査します。GitHub Actionsも同じコマンドを実行します。
+
+**注意:** 現在は17命令のデモROMを対象とした回帰テストです。デモROMを変更した場合は、テスト側の期待命令とケースを更新してください。CPUの内部PC/SP/RAMの値そのものを検証するものではありません。
