@@ -23,8 +23,8 @@
 // -----------------------------------------------------------------------------
 //
 //   Stack Pointer
-//   PUSH
-//   POP
+//   PUSH / POP
+//   CALL / RET
 //
 // CisaにはすでにRAMがある。
 //
@@ -132,7 +132,7 @@
 //   |  opcode   |    reg     |          unused          |
 //   +-----------+------------+--------------------------+
 //
-// OUT / PUSH / POPなどで使う。
+// OUT / PUSH / POP / RETなどで使う。
 //
 //
 // -----------------------------------------------------------------------------
@@ -144,7 +144,7 @@
 //   |  opcode   |   unused   |        target:16         |
 //   +-----------+------------+--------------------------+
 //
-// JMP / JZで使う。
+// JMP / JZ / CALLで使う。
 //
 // targetはbyte addressではない。
 //
@@ -153,7 +153,7 @@
 //
 //
 // -----------------------------------------------------------------------------
-// v3 ISA
+// Cisa ISA
 // -----------------------------------------------------------------------------
 //
 // MOVI rd, imm
@@ -190,6 +190,12 @@
 // OUT reg
 //   regの値を表示する。
 //
+// CALL target
+//   次のPCをRAM stackに保存し、targetへbranch。
+//
+// RET
+//   RAM stackからPCを復元する。
+//
 // HALT
 //   CPUを停止する。
 //
@@ -222,24 +228,8 @@ const RAM_SIZE: i64 = 16;
 const STACK_EMPTY_SP: u32 = 16u32;
 
 
-// 今回のテストROM:
-//
-//   MOVI r0, 10
-//   PUSH r0
-//
-//   MOVI r0, 20
-//   PUSH r0
-//
-//   POP r1
-//   OUT r1
-//
-//   POP r2
-//   OUT r2
-//
-//   HALT
-//
-// 合計9命令。
-const ROM_SIZE: i64 = 9;
+// LIFOとネストしたCALL/RETを確認するテストROM（17命令）。
+const ROM_SIZE: i64 = 17;
 
 
 // -----------------------------------------------------------------------------
@@ -283,6 +273,8 @@ const OP_STORE: u8 = 8;
 
 const OP_PUSH: u8 = 9;
 const OP_POP: u8 = 10;
+const OP_CALL: u8 = 11;
+const OP_RET: u8 = 12;
 
 
 // HALT
@@ -465,6 +457,14 @@ fn encode_pop(reg: u8) -> u32 {
 }
 
 
+fn encode_call(target: u16) -> u32 {
+    return (u32(OP_CALL) << 24) | u32(target);
+}
+
+fn encode_ret() -> u32 {
+    return u32(OP_RET) << 24;
+}
+
 fn encode_halt() -> u32 {
     return u32(OP_HALT) << 24;
 }
@@ -515,7 +515,7 @@ fn decode_immediate16(instruction: u32) -> u16 {
     // 用途:
     //
     //   MOVI       immediate
-    //   JMP / JZ   target
+    //   JMP / JZ / CALL   target
     //   LOAD       address
     //   STORE      address
 
@@ -1102,6 +1102,52 @@ fn step(machine: Machine, rom: [u32; ROM_SIZE]) -> Machine {
 
 
     // -------------------------------------------------------------------------
+    // EXECUTE : CALL / RET
+    // -------------------------------------------------------------------------
+
+    if opcode == OP_CALL {
+        target: u32 = u32(decode_immediate16(instruction));
+
+        // 無効な飛び先ではstackを変更しない。
+        if i64(target) >= array_len(rom) {
+            print("call target out of range");
+            return with_cpu(machine, Cpu { ..cpu, halted: true });
+        }
+        if cpu.sp == 0u32 {
+            print("stack overflow");
+            return with_cpu(machine, Cpu { ..cpu, halted: true });
+        }
+
+        next_sp: u32 = cpu.sp - 1u32;
+        mut ram: [u32; RAM_SIZE] = machine.ram;
+        ram[i64(next_sp)] = cpu.pc + 1u32;
+
+        return Machine {
+            ..machine,
+            cpu: Cpu { ..cpu, pc: target, sp: next_sp },
+            ram: ram,
+        };
+    }
+
+    if opcode == OP_RET {
+        if cpu.sp >= STACK_EMPTY_SP {
+            print("stack underflow");
+            return with_cpu(machine, Cpu { ..cpu, halted: true });
+        }
+
+        target: u32 = machine.ram[i64(cpu.sp)];
+        if i64(target) >= array_len(rom) {
+            print("return address out of range");
+            return with_cpu(machine, Cpu { ..cpu, halted: true });
+        }
+
+        return with_cpu(
+            machine,
+            Cpu { ..cpu, pc: target, sp: cpu.sp + 1u32 },
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // EXECUTE : OUT
     // -------------------------------------------------------------------------
 
@@ -1166,183 +1212,37 @@ fn step(machine: Machine, rom: [u32; ROM_SIZE]) -> Machine {
 
 
 // -----------------------------------------------------------------------------
-// Test ROM
+// Test ROM: LIFO and nested subroutines
 // -----------------------------------------------------------------------------
 //
-// 今回はstackのLIFO動作を確認する。
+//   0..7  : PUSH / POPで20、10を出力
+//   8     : CALL 11 (return PC=9)
+//   11..13: r3=4; CALL 14 (return PC=13); RET
+//   14..16: r4=8; r3=r3+r4; RET
+//   9..10 : OUT r3 (=12); HALT
 //
-// LIFO:
-//
-//   Last In
-//   First Out
-//
-// 最後に入れたものが最初に出てくる。
-//
-//
-// 人間向けに書くと:
-//
-//   MOVI r0, 10
-//   PUSH r0
-//
-//   MOVI r0, 20
-//   PUSH r0
-//
-//   POP  r1
-//   OUT  r1
-//
-//   POP  r2
-//   OUT  r2
-//
-//   HALT
-//
-//
-// -----------------------------------------------------------------------------
-// Stackの変化
-// -----------------------------------------------------------------------------
-//
-// 初期状態:
-//
-//   sp = 16
-//
-//   stack = empty
-//
-//
-// MOVI r0, 10
-//
-//   r0 = 10
-//
-//
-// PUSH r0
-//
-//   sp = 15
-//
-//   RAM[15] = 10
-//
-//
-// MOVI r0, 20
-//
-//   r0 = 20
-//
-//
-// PUSH r0
-//
-//   sp = 14
-//
-//   RAM[14] = 20
-//   RAM[15] = 10
-//
-//
-// POP r1
-//
-//   r1 = RAM[14]
-//
-//   r1 = 20
-//   sp = 15
-//
-//
-// OUT r1
-//
-//   20
-//
-//
-// POP r2
-//
-//   r2 = RAM[15]
-//
-//   r2 = 10
-//   sp = 16
-//
-//
-// OUT r2
-//
-//   10
-//
-//
-// 最後:
-//
-//   sp = 16
-//
-//   stack = empty
-//
-//
-// -----------------------------------------------------------------------------
-// 実行結果
-// -----------------------------------------------------------------------------
-//
-//   20
-//   10
+// CALL/RETはゲストCPUのRAM stackを使う。
+// Cerune側の再帰呼び出しは必要ない。
 
 program: [u32; ROM_SIZE] = [
-    // 0
-    //
-    // r0 = 10
-    encode_movi(
-        0u8,
-        10u16,
-    ),
-
-
-    // 1
-    //
-    // push 10
-    encode_push(
-        0u8,
-    ),
-
-
-    // 2
-    //
-    // r0 = 20
-    encode_movi(
-        0u8,
-        20u16,
-    ),
-
-
-    // 3
-    //
-    // push 20
-    encode_push(
-        0u8,
-    ),
-
-
-    // 4
-    //
-    // r1 = pop()
-    //
-    // => 20
-    encode_pop(
-        1u8,
-    ),
-
-
-    // 5
-    encode_out(
-        1u8,
-    ),
-
-
-    // 6
-    //
-    // r2 = pop()
-    //
-    // => 10
-    encode_pop(
-        2u8,
-    ),
-
-
-    // 7
-    encode_out(
-        2u8,
-    ),
-
-
-    // 8
-    encode_halt(),
+    encode_movi(0u8, 10u16),            // 0
+    encode_push(0u8),                  // 1
+    encode_movi(0u8, 20u16),            // 2
+    encode_push(0u8),                  // 3
+    encode_pop(1u8),                   // 4
+    encode_out(1u8),                   // 5 -> 20
+    encode_pop(2u8),                   // 6
+    encode_out(2u8),                   // 7 -> 10
+    encode_call(11u16),                // 8
+    encode_out(3u8),                   // 9 -> 12
+    encode_halt(),                     // 10
+    encode_movi(3u8, 4u16),            // 11
+    encode_call(14u16),                // 12
+    encode_ret(),                      // 13
+    encode_movi(4u8, 8u16),            // 14
+    encode_add(3u8, 3u8, 4u8),         // 15
+    encode_ret(),                      // 16
 ];
-
 
 // -----------------------------------------------------------------------------
 // Initial machine state
