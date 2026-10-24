@@ -77,6 +77,8 @@ sp = sp + 1
 | `STORE rs, address` | registerからRAMへ書く |
 | `PUSH reg` | registerの値をstackへ積む |
 | `POP reg` | stackからregisterへ取り出す |
+| `CALL target` | 次のPCをRAM stackに積んでtargetへ分岐する |
+| `RET` | RAM stackから戻り先PCを復元する |
 | `OUT reg` | registerの値を表示する |
 | `HALT` | CPUを停止する |
 
@@ -165,10 +167,35 @@ HALT
 
 最後にPUSHした20が最初にPOPされ、その次に10が取り出されます。
 
-まだ `CALL` / `RET` はありません。
+さらにネストしたCALL / RETも試します。
 
-次はreturn addressをstackへ保存して、サブルーチン呼び出しを作ってみたいところです。
+```asm
+CALL subroutine       ; return addressをRAM stackへ積む
+OUT r3                ; サブルーチン実行後の値（12）
+HALT
 
+subroutine:
+MOVI r3, 4
+CALL inner
+RET
+
+inner:
+MOVI r4, 8
+ADD r3, r3, r4
+RET
+```
+
+CALLは次の命令番号をstackへ保存して分岐し、RETは保存されたPCへ戻ります。ROM外へのCALL、空stackでのRET、ROM外の戻り先、満杯stackでのCALLを検出して停止します。これはCisaのゲスト命令であり、Cerune本体の再帰には依存しません。
+
+現在のROMはLIFO検証とネストしたCALL / RETの両方を実行します。期待する出力は次の通りです。
+
+```text
+20
+10
+12
+```
+
+検証時は `cerune check src/cpu.ceru` の後、IR・MIR・SSA・VMの各実行で同じ出力になることを確認します。変更前のLIFO出力 `20` と `10` も維持します。なおCisaのstackは16 wordで、CALLの戻り先とPUSHしたデータは同じRAMを使います。呼出規約や任意のプログラムのstack安全性を提供するものではありません。
 
 ## CeruneのDogfooding
 
@@ -185,11 +212,12 @@ cerune run-mir src/cpu.ceru --ssa
 cerune run-vm src/cpu.ceru
 ```
 
-現在のstackテストでは、すべて同じ結果になります。
+現在のstack / CALL / RETテストで期待する共通結果は次の通りです。
 
 ```text
 20
 10
+12
 ```
 
 つまりざっくり、
@@ -233,7 +261,7 @@ Cisa
 │  ├─ Branch
 │  ├─ Load / Store
 │  ├─ Push / Pop
-│  ├─ Call / Return
+│  ├─ Call / Return（基本命令は実装済み）
 │  └─ I/O
 │
 ├─ Memory
